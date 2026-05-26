@@ -13,8 +13,10 @@ pyannote.audio==3.3.2
 speechbrain==1.1.0
 hyperpyyaml==1.2.3
 
-# Datasets
-datasets==4.8.5
+# Datasets (v4.8.5 requires torchcodec which has FFmpeg/libpango issues on this system)
+datasets==2.21.0
+librosa==0.11.0
+soundfile==0.13.1
 
 # Evaluation
 pyannote.metrics==3.2.1
