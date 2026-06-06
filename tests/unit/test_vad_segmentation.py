@@ -65,3 +65,16 @@ def test_prepare_asr_speech_regions_applies_merge_then_split():
         {"start": 2.0, "end": 4.0, "score": None},
         {"start": 4.0, "end": 5.0, "score": None},
     ]
+
+
+def test_prepare_asr_speech_regions_keeps_absolute_times_after_split():
+    regions = prepare_asr_speech_regions(
+        [{"start": 30.0, "end": 33.5}],
+        merge_gap_s=0.0,
+        max_duration_s=2.0,
+    )
+
+    assert regions == [
+        {"start": 30.0, "end": 32.0, "score": None},
+        {"start": 32.0, "end": 33.5, "score": None},
+    ]
