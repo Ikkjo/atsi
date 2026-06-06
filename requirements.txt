@@ -1,4 +1,4 @@
-# Core ML (pinned: torchaudio >2.8 breaks pyannote.audio AudioMetaData)
+# Core ML
 torch==2.8.0
 torchaudio==2.8.0
 
@@ -13,8 +13,8 @@ pyannote.audio==3.3.2
 speechbrain==1.1.0
 hyperpyyaml==1.2.3
 
-# Datasets (v4.8.5 requires torchcodec which has FFmpeg/libpango issues on this system)
-datasets==2.21.0
+# Datasets
+datasets==4.8.5
 librosa==0.11.0
 soundfile==0.13.1
 
@@ -30,6 +30,6 @@ matplotlib==3.10.9
 seaborn==0.13.2
 
 # Utilities
-tqdm==4.67.3
+tqdm==4.68.1
 python-dotenv==1.2.2
 scikit-learn==1.8.0
