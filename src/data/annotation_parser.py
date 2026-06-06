@@ -44,6 +44,7 @@ class AnnotationParser:
                 - speakers: list of speaker IDs
                 - segments: list of speaker segment dicts
                 - words: list of word-level transcription dicts
+                - metadata: annotation provenance and timing notes
         """
         segments = self.loader.get_meeting_segments(meeting_id, split)
         if not segments:
@@ -60,6 +61,13 @@ class AnnotationParser:
             "speakers": speakers,
             "segments": speaker_segments,
             "words": word_annotations,
+            "metadata": {
+                "word_timestamp_source": "estimated_from_segment_boundaries",
+                "word_timestamp_note": (
+                    "HuggingFace AMI rows expose segment-level begin/end times. "
+                    "Word timings are estimated uniformly within each segment."
+                ),
+            },
         }
 
     def _extract_speaker_segments(self, segments: list[dict]) -> list[dict]:
@@ -144,6 +152,7 @@ class AnnotationParser:
                     "speaker": seg["speaker_id"],
                     "start": round(word_start, 3),
                     "end": round(word_end, 3),
+                    "timestamp_source": "estimated_from_segment_boundaries",
                 })
 
         return words

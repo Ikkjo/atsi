@@ -7,14 +7,10 @@ and generates reference embeddings using ECAPA-TDNN (SpeechBrain).
 
 import logging
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
-import torchaudio
-from pyannote.audio import Model as PyannoteModel
-from pyannote.audio.core.io import Audio
-from pyannote.audio.pipelines.speaker_verification import PretrainedSpeakerEmbedding
+from pyannote.audio import Inference, Model as PyannoteModel
 from pyannote.audio.utils.signal import Binarize
 from speechbrain.inference.classifiers import EncoderClassifier
 
@@ -49,8 +45,9 @@ class ReferenceEmbeddingExtractor:
         self.loader = loader
         self.device = device or get_device()
         self._vad_model: PyannoteModel | None = None
+        self._vad_inference: Inference | None = None
         self._embedding_model: EncoderClassifier | None = None
-        self._audio = Audio(sample_rate=TARGET_SR, mono="downmix")
+        self._vad_cache: dict[str, list[tuple[float, float]]] = {}
 
     @property
     def vad_model(self) -> PyannoteModel:
@@ -65,6 +62,13 @@ class ReferenceEmbeddingExtractor:
             self._vad_model.to(self.device)
             logger.info("VAD model loaded.")
         return self._vad_model
+
+    @property
+    def vad_inference(self) -> Inference:
+        """Lazy-load pyannote inference wrapper for the segmentation model."""
+        if self._vad_inference is None:
+            self._vad_inference = Inference(self.vad_model, device=self.device)
+        return self._vad_inference
 
     @property
     def embedding_model(self) -> EncoderClassifier:
@@ -89,7 +93,10 @@ class ReferenceEmbeddingExtractor:
             List of (start, end) tuples in seconds.
         """
         audio_path = str(audio_path)
-        segments = []
+        if audio_path in self._vad_cache:
+            return self._vad_cache[audio_path]
+
+        segments: list[tuple[float, float]] = []
 
         try:
             binarize = Binarize(
@@ -99,13 +106,14 @@ class ReferenceEmbeddingExtractor:
                 min_duration_off=0.1,
             )
 
-            for chunk, speech in self.vad_model(audio_path).itertracks(yield_label=True):
-                speech_regions = binarize(speech)
-                for region in speech_regions:
-                    segments.append((region.start, region.end))
+            prediction = self.vad_inference(audio_path)
+            speech_annotation = binarize(prediction)
+            for region in speech_annotation.get_timeline().support():
+                segments.append((region.start, region.end))
         except Exception as e:
             logger.warning("VAD failed for %s: %s", audio_path, e)
 
+        self._vad_cache[audio_path] = segments
         return segments
 
     def extract_speaker_speech(
@@ -118,7 +126,9 @@ class ReferenceEmbeddingExtractor:
         """Extract speech-only audio segments for a specific speaker.
 
         Uses ground truth annotations to identify speaker segments, then
-        applies VAD to filter to speech-only regions.
+        applies VAD and removes regions that overlap with other annotated
+        speakers. If VAD fails, falls back to annotation-only regions so the
+        caller can still generate a clearly logged baseline reference.
 
         Args:
             meeting_id: AMI meeting identifier.
@@ -130,10 +140,13 @@ class ReferenceEmbeddingExtractor:
             List of waveform tensors (1, samples) at 16kHz.
         """
         segments = self.loader.get_meeting_segments(meeting_id, split)
-        speaker_segments = [
-            s for s in segments if s["speaker_id"] == speaker_id
-        ]
+        speaker_segments = [s for s in segments if s["speaker_id"] == speaker_id]
         speaker_segments.sort(key=lambda s: s["begin_time"])
+        other_speaker_intervals = [
+            (s["begin_time"], s["end_time"])
+            for s in segments
+            if s["speaker_id"] != speaker_id
+        ]
 
         audio_clips: list[torch.Tensor] = []
         total_duration = 0.0
@@ -146,35 +159,89 @@ class ReferenceEmbeddingExtractor:
             start = seg["begin_time"]
             end = seg["end_time"]
 
-            try:
-                waveform, sr = load_audio(audio_path, start_time=start, end_time=end)
-            except Exception as e:
-                logger.warning("Failed to load audio for %s: %s", seg.get("audio_id", "unknown"), e)
-                continue
-
             speech_segments = self.get_speech_segments(audio_path)
+            candidate_intervals = self._intersect_intervals(
+                [(start, end)],
+                speech_segments,
+            )
+            if not candidate_intervals:
+                logger.warning(
+                    "No VAD speech overlap for %s/%s %.2f-%.2f; using annotation interval",
+                    meeting_id,
+                    speaker_id,
+                    start,
+                    end,
+                )
+                candidate_intervals = [(start, end)]
 
-            for speech_start, speech_end in speech_segments:
-                seg_start = max(0, speech_start - start)
-                seg_end = min(waveform.shape[1] / sr, speech_end - start)
+            clean_intervals = self._subtract_intervals(
+                candidate_intervals,
+                other_speaker_intervals,
+            )
 
-                if seg_end <= seg_start:
+            for clean_start, clean_end in clean_intervals:
+                if clean_end <= clean_start:
                     continue
 
-                start_frame = int(seg_start * sr)
-                end_frame = int(seg_end * sr)
-                clip = waveform[:, start_frame:end_frame]
+                try:
+                    clip, sr = load_audio(
+                        audio_path,
+                        start_time=clean_start,
+                        end_time=clean_end,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to load audio for %s: %s",
+                        seg.get("audio_id", "unknown"),
+                        e,
+                    )
+                    continue
 
                 if clip.shape[1] < sr * 0.2:
                     continue
 
                 audio_clips.append(clip)
-                total_duration += (seg_end - seg_start)
+                total_duration += (clean_end - clean_start)
 
                 if total_duration >= max_duration:
                     break
 
         return audio_clips
+
+    @staticmethod
+    def _intersect_intervals(
+        base_intervals: list[tuple[float, float]],
+        filter_intervals: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Return intersections between two interval lists."""
+        intersections: list[tuple[float, float]] = []
+        for base_start, base_end in base_intervals:
+            for filter_start, filter_end in filter_intervals:
+                start = max(base_start, filter_start)
+                end = min(base_end, filter_end)
+                if end > start:
+                    intersections.append((start, end))
+        return intersections
+
+    @staticmethod
+    def _subtract_intervals(
+        intervals: list[tuple[float, float]],
+        blocked: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Remove blocked intervals, preserving non-overlapping speech regions."""
+        remaining = intervals[:]
+        for block_start, block_end in sorted(blocked):
+            next_remaining: list[tuple[float, float]] = []
+            for start, end in remaining:
+                if block_end <= start or block_start >= end:
+                    next_remaining.append((start, end))
+                    continue
+                if block_start > start:
+                    next_remaining.append((start, block_start))
+                if block_end < end:
+                    next_remaining.append((block_end, end))
+            remaining = next_remaining
+        return remaining
 
     def compute_embedding(self, waveform: torch.Tensor) -> np.ndarray:
         """Compute ECAPA-TDNN embedding for a waveform.
@@ -303,4 +370,22 @@ class ReferenceEmbeddingExtractor:
                         e,
                     )
 
+        return paths
+
+    def save_meeting_references(
+        self,
+        meeting_id: str,
+        split: str = "train",
+        output_dir: str = "data/references",
+    ) -> list[Path]:
+        """Compute and save references for all speakers in one meeting.
+
+        This is the preferred Scenario 3 enrollment entry point: references
+        are generated for the same meeting whose speakers will be identified.
+        """
+        paths = []
+        for speaker_id in self.loader.get_meeting_speakers(meeting_id, split):
+            paths.append(
+                self.save_reference_embedding(meeting_id, speaker_id, split, output_dir)
+            )
         return paths
