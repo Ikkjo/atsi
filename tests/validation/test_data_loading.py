@@ -1,4 +1,4 @@
-"""Smoke test for Epic 2: Data Collection and Preparation.
+"""Smoke test for Data Collection and Preparation.
 
 Validates:
 - AMI corpus loads without error
@@ -207,7 +207,7 @@ def test_reference_embeddings() -> bool:
 def main() -> None:
     """Run all smoke tests."""
     print("=" * 60)
-    print("Epic 2: Data Collection and Preparation - Smoke Tests")
+    print("Data Collection and Preparation - Smoke Tests")
     print("=" * 60)
 
     results = {
