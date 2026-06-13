@@ -1,0 +1,36 @@
+{
+  "experiment_id": "scenario2_sdm",
+  "scenario": "scenario2",
+  "microphone_configuration": "sdm",
+  "split": "test",
+  "meeting_ids": null,
+  "seed": 1337,
+  "paths": {
+    "annotations_dir": "data/processed",
+    "asr_dir": "results/asr/sdm",
+    "embeddings_dir": "results/embeddings/sdm",
+    "reference_embeddings_dir": "data/references/sdm",
+    "output_dir": "results/experiments/scenario2_sdm"
+  },
+  "diarization": {
+    "linkage_method": "average",
+    "metric": "cosine",
+    "distance_threshold": null,
+    "reference_threshold": null
+  },
+  "integration": {
+    "refine_diarization": true,
+    "min_segment_duration_s": 0.2,
+    "max_merge_gap_s": 0.5
+  },
+  "evaluation": {
+    "collar": 0.25,
+    "skip_overlap": true,
+    "normalize_wer": true
+  },
+  "runtime": {
+    "use_cached_asr": true,
+    "use_cached_embeddings": true,
+    "fail_fast": false
+  }
+}

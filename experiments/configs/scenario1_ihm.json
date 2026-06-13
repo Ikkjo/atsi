@@ -1,0 +1,37 @@
+{
+  "experiment_id": "scenario1_ihm",
+  "scenario": "scenario1",
+  "microphone_configuration": "ihm",
+  "split": "test",
+  "meeting_ids": null,
+  "seed": 1337,
+  "paths": {
+    "annotations_dir": "data/processed",
+    "asr_dir": "results/asr/ihm",
+    "embeddings_dir": "results/embeddings/ihm",
+    "reference_embeddings_dir": "data/references/ihm",
+    "output_dir": "results/experiments/scenario1_ihm"
+  },
+  "diarization": {
+    "linkage_method": "average",
+    "metric": "cosine",
+    "distance_threshold": 0.35,
+    "reference_threshold": null,
+    "note": "PLACEHOLDER threshold - run validation sweep to determine optimal value"
+  },
+  "integration": {
+    "refine_diarization": true,
+    "min_segment_duration_s": 0.2,
+    "max_merge_gap_s": 0.5
+  },
+  "evaluation": {
+    "collar": 0.25,
+    "skip_overlap": true,
+    "normalize_wer": true
+  },
+  "runtime": {
+    "use_cached_asr": true,
+    "use_cached_embeddings": true,
+    "fail_fast": false
+  }
+}
