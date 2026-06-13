@@ -59,6 +59,68 @@ def evaluate_asr_wer(
     }
 
 
+def evaluate_integrated_wer(
+    integrated_transcript: str | Path | dict[str, Any],
+    reference_annotations: str | Path | dict[str, Any],
+    asr_output: str | Path | dict[str, Any] | None = None,
+    normalize: bool = True,
+) -> dict[str, Any]:
+    """Evaluate WER for the final speaker-labelled transcript.
+
+    If the original Whisper output is provided, the result includes both
+    whisper-only and integrated WER so the diarization/integration step can be
+    checked for accidental word loss or re-ordering.
+    """
+    integrated_record = _load_json(integrated_transcript)
+    reference_record = _load_json(reference_annotations)
+    reference_text = reference_text_from_annotations(reference_record)
+    integrated_text = hypothesis_text_from_integrated(integrated_record)
+    integrated_metrics = compute_wer(reference_text, integrated_text, normalize=normalize)
+
+    result = {
+        "meeting_id": reference_record.get("meeting_id") or integrated_record.get("metadata", {}).get("recording_name"),
+        "config": reference_record.get("config") or integrated_record.get("metadata", {}).get("microphone_configuration"),
+        "scenario": integrated_record.get("metadata", {}).get("scenario"),
+        "reference_text": reference_text,
+        "integrated_hypothesis_text": integrated_text,
+        "integrated": integrated_metrics,
+    }
+
+    if asr_output is not None:
+        asr_record = _load_json(asr_output)
+        whisper_text = hypothesis_text_from_asr(asr_record)
+        result["whisper_hypothesis_text"] = whisper_text
+        result["whisper_only"] = compute_wer(reference_text, whisper_text, normalize=normalize)
+        result["wer_delta_integrated_minus_whisper"] = result["integrated"]["wer"] - result["whisper_only"]["wer"]
+
+    return result
+
+
+def evaluate_integrated_wer_batch(
+    pairs: list[tuple[str | Path, str | Path]],
+    asr_outputs: list[str | Path] | None = None,
+    output_path: str | Path | None = None,
+    normalize: bool = True,
+) -> dict[str, Any]:
+    """Evaluate multiple integrated transcript/reference pairs."""
+    records = []
+    for idx, (integrated_path, reference_path) in enumerate(pairs):
+        asr_output = asr_outputs[idx] if asr_outputs is not None else None
+        records.append(evaluate_integrated_wer(integrated_path, reference_path, asr_output=asr_output, normalize=normalize))
+
+    result = {
+        "records": records,
+        "summary": {
+            "num_recordings": len(records),
+            "integrated": _summarize_nested_wer(records, "integrated"),
+            "whisper_only": _summarize_nested_wer(records, "whisper_only"),
+        },
+    }
+    if output_path is not None:
+        save_wer_results(result, output_path)
+    return result
+
+
 def evaluate_asr_wer_batch(
     pairs: list[tuple[str | Path, str | Path]],
     output_path: str | Path | None = None,
@@ -117,6 +179,20 @@ def hypothesis_text_from_asr(asr_record: dict[str, Any]) -> str:
     if text:
         return text
     segments = asr_record.get("segments") or []
+    text = " ".join((segment.get("text") or "").strip() for segment in segments).strip()
+    if text:
+        return text
+    words = asr_record.get("words") or []
+    return " ".join((word.get("word") or word.get("text") or "").strip() for word in words).strip()
+
+
+def hypothesis_text_from_integrated(integrated_record: dict[str, Any]) -> str:
+    """Extract hypothesis words from the final integrated transcript JSON."""
+    words = integrated_record.get("words") or []
+    if words:
+        return " ".join((word.get("word") or word.get("text") or "").strip() for word in words).strip()
+
+    segments = integrated_record.get("segments") or []
     return " ".join((segment.get("text") or "").strip() for segment in segments).strip()
 
 
@@ -172,4 +248,19 @@ def _summarize_group(records: list[dict[str, Any]]) -> dict[str, Any]:
         "total_substitutions": sum(record["substitutions"] for record in records),
         "total_insertions": sum(record["insertions"] for record in records),
         "total_deletions": sum(record["deletions"] for record in records),
+    }
+
+
+def _summarize_nested_wer(records: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    nested = [record[key] for record in records if key in record]
+    if not nested:
+        return {"num_recordings": 0, "mean_wer": None, "total_reference_words": 0}
+    return {
+        "num_recordings": len(nested),
+        "mean_wer": mean(record["wer"] for record in nested),
+        "total_reference_words": sum(record["reference_words"] for record in nested),
+        "total_hypothesis_words": sum(record["hypothesis_words"] for record in nested),
+        "total_substitutions": sum(record["substitutions"] for record in nested),
+        "total_insertions": sum(record["insertions"] for record in nested),
+        "total_deletions": sum(record["deletions"] for record in nested),
     }
