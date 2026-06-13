@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.diarization.rttm import filter_short_rttm_segments, merge_adjacent_rttm_segments
 from src.integration.alignment import UNKNOWN_SPEAKER, align_words_to_speakers
+
+
+DEFAULT_MAX_MERGE_GAP_S = 0.5
+DEFAULT_MIN_SEGMENT_DURATION_S = 0.2
 
 
 def build_transcript_segments(aligned_words: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -52,11 +57,23 @@ def build_integrated_transcript(
     microphone_configuration: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
     unknown_speaker: str = UNKNOWN_SPEAKER,
+    refine_diarization: bool = True,
+    min_segment_duration_s: float = DEFAULT_MIN_SEGMENT_DURATION_S,
+    max_merge_gap_s: float = DEFAULT_MAX_MERGE_GAP_S,
 ) -> dict[str, Any]:
     """Build a JSON-serializable final transcript from ASR and diarization outputs."""
+    alignment_segments = (
+        refine_diarization_segments(
+            diarization_segments,
+            min_duration_s=min_segment_duration_s,
+            max_gap_s=max_merge_gap_s,
+        )
+        if refine_diarization
+        else [dict(segment) for segment in diarization_segments]
+    )
     aligned_words = align_words_to_speakers(
         asr_result.get("words") or [],
-        diarization_segments,
+        alignment_segments,
         unknown_speaker=unknown_speaker,
     )
     transcript_segments = build_transcript_segments(aligned_words)
@@ -69,6 +86,13 @@ def build_integrated_transcript(
         "asr_model_id": asr_result.get("model_id"),
         "word_timestamp_mode": asr_result.get("word_timestamp_mode"),
         "duration": asr_result.get("duration"),
+        "diarization_refinement": {
+            "enabled": refine_diarization,
+            "min_segment_duration_s": min_segment_duration_s if refine_diarization else None,
+            "max_merge_gap_s": max_merge_gap_s if refine_diarization else None,
+            "input_segments": len(diarization_segments),
+            "output_segments": len(alignment_segments),
+        },
     }
     if extra_metadata:
         metadata.update(extra_metadata)
@@ -79,6 +103,16 @@ def build_integrated_transcript(
         "segments": transcript_segments,
         "words": aligned_words,
     }
+
+
+def refine_diarization_segments(
+    diarization_segments: list[dict[str, Any]],
+    min_duration_s: float = DEFAULT_MIN_SEGMENT_DURATION_S,
+    max_gap_s: float = DEFAULT_MAX_MERGE_GAP_S,
+) -> list[dict[str, Any]]:
+    """Apply Epic 5.3 diarization post-processing before ASR alignment."""
+    filtered = filter_short_rttm_segments(diarization_segments, min_duration_s=min_duration_s)
+    return merge_adjacent_rttm_segments(filtered, max_gap_s=max_gap_s)
 
 
 def format_text_transcript(segments: list[dict[str, Any]]) -> str:

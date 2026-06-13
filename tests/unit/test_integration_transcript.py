@@ -5,6 +5,7 @@ from src.integration.transcript import (
     build_transcript_segments,
     format_text_transcript,
     format_timestamp,
+    refine_diarization_segments,
     save_json_transcript,
     save_text_transcript,
 )
@@ -70,6 +71,13 @@ def test_build_integrated_transcript_includes_metadata_words_and_text():
         "asr_model_id": "openai/whisper-small",
         "word_timestamp_mode": "native",
         "duration": 20.0,
+        "diarization_refinement": {
+            "enabled": True,
+            "min_segment_duration_s": 0.2,
+            "max_merge_gap_s": 0.5,
+            "input_segments": 2,
+            "output_segments": 2,
+        },
     }
     assert transcript["words"][0]["speaker_id"] == "Speaker_A"
     assert transcript["words"][1]["speaker_id"] == "Speaker_B"
@@ -77,6 +85,24 @@ def test_build_integrated_transcript_includes_metadata_words_and_text():
         "[00:00:12 - 00:00:12] Speaker_A: hello\n"
         "[00:00:16 - 00:00:16] Speaker_B: there"
     )
+
+
+def test_refine_diarization_segments_filters_short_and_merges_adjacent():
+    diarization = [
+        {"start": 0.0, "end": 0.1, "speaker_id": "noise"},
+        {"start": 1.0, "end": 1.5, "speaker_id": "Speaker_A"},
+        {"start": 1.8, "end": 2.2, "speaker_id": "Speaker_A"},
+        {"start": 3.0, "end": 4.0, "speaker_id": "Speaker_B"},
+    ]
+
+    refined = refine_diarization_segments(diarization)
+
+    assert len(refined) == 2
+    assert refined[0]["start"] == 1.0
+    assert refined[0]["end"] == 2.2
+    assert refined[0]["speaker_id"] == "Speaker_A"
+    assert round(refined[0]["duration"], 3) == 1.2
+    assert refined[1]["speaker_id"] == "Speaker_B"
 
 
 def test_save_text_and_json_transcripts(tmp_path):

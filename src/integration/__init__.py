@@ -10,6 +10,7 @@ from src.integration.transcript import (
     build_transcript_segments,
     format_text_transcript,
     format_timestamp,
+    refine_diarization_segments,
     save_json_transcript,
     save_text_transcript,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "build_transcript_segments",
     "format_text_transcript",
     "format_timestamp",
+    "refine_diarization_segments",
     "save_json_transcript",
     "save_text_transcript",
 ]
