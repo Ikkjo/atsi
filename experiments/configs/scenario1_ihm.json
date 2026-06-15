@@ -3,6 +3,7 @@
   "scenario": "scenario1",
   "microphone_configuration": "ihm",
   "split": "test",
+  "hf_cache_dir": "/media/ikkjo/StoreJet - Ilija/hf_cache",
   "meeting_ids": null,
   "seed": 1337,
   "paths": {
@@ -18,6 +19,9 @@
     "distance_threshold": 0.35,
     "reference_threshold": null,
     "note": "PLACEHOLDER threshold - run validation sweep to determine optimal value"
+  },
+  "vad": {
+    "enabled": true
   },
   "integration": {
     "refine_diarization": true,

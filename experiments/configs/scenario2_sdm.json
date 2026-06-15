@@ -3,6 +3,7 @@
   "scenario": "scenario2",
   "microphone_configuration": "sdm",
   "split": "test",
+  "hf_cache_dir": "/media/ikkjo/StoreJet - Ilija/hf_cache",
   "meeting_ids": null,
   "seed": 1337,
   "paths": {
@@ -17,6 +18,9 @@
     "metric": "cosine",
     "distance_threshold": null,
     "reference_threshold": null
+  },
+  "vad": {
+    "enabled": true
   },
   "integration": {
     "refine_diarization": true,
