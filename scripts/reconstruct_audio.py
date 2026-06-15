@@ -21,14 +21,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from experiments.run_experiment import _get_meeting_audio_path
 from src.data.ami_loader import AMILoader
+from src.data.meeting_audio import get_meeting_audio_path
 
 
 def reconstruct_audio(
     config: str = "ihm",
     split: str = "test",
     meeting_ids: list[str] | None = None,
+    cache_dir: str | None = None,
 ) -> list[str]:
     """Reconstruct audio for all meetings in a configuration.
 
@@ -41,7 +42,7 @@ def reconstruct_audio(
         List of paths to reconstructed audio files.
     """
     print(f"Reconstructing audio for {config.upper()}/{split}...")
-    loader = AMILoader(config=config)
+    loader = AMILoader(config=config, cache_dir=cache_dir)
 
     if meeting_ids is None:
         meeting_ids = loader.get_meeting_ids(split)
@@ -50,14 +51,9 @@ def reconstruct_audio(
     paths: list[str] = []
     failed: list[str] = []
 
-    experiment_config = {
-        "microphone_configuration": config,
-        "split": split,
-    }
-
     for idx, meeting_id in enumerate(meeting_ids, 1):
         try:
-            path = _get_meeting_audio_path(experiment_config, meeting_id)
+            path = get_meeting_audio_path(loader, meeting_id, split)
             paths.append(path)
             print(f"  [{idx}/{len(meeting_ids)}] {meeting_id}: {path}")
         except Exception as e:
@@ -93,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         help="Specific meeting ID(s) to process. If omitted, processes all.",
     )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="/media/ikkjo/StoreJet - Ilija/hf_cache",
+        help="HuggingFace dataset cache directory. Defaults to external drive.",
+    )
     return parser.parse_args()
 
 
@@ -102,6 +104,7 @@ def main() -> int:
         config=args.config,
         split=args.split,
         meeting_ids=args.meeting_id,
+        cache_dir=args.cache_dir,
     )
     return 0
 

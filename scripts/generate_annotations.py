@@ -26,6 +26,7 @@ def generate_annotations(
     split: str = "test",
     output_dir: str = "data/processed",
     meeting_ids: list[str] | None = None,
+    cache_dir: str | None = None,
 ) -> list[Path]:
     """Generate annotations for all meetings in a configuration.
 
@@ -39,7 +40,7 @@ def generate_annotations(
         List of paths to saved annotation files.
     """
     print(f"Generating annotations for {config.upper()}/{split}...")
-    loader = AMILoader(config=config)
+    loader = AMILoader(config=config, cache_dir=cache_dir)
     parser = AnnotationParser(loader)
 
     if meeting_ids is None:
@@ -95,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         help="Specific meeting ID(s) to process. If omitted, processes all.",
     )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="/media/ikkjo/StoreJet - Ilija/hf_cache",
+        help="HuggingFace dataset cache directory. Defaults to external drive.",
+    )
     return parser.parse_args()
 
 
@@ -105,6 +112,7 @@ def main() -> int:
         split=args.split,
         output_dir=args.output_dir,
         meeting_ids=args.meeting_id,
+        cache_dir=args.cache_dir,
     )
     return 0
 

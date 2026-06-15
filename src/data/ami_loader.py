@@ -120,8 +120,8 @@ class AMILoader:
     def get_meeting_audio_path(self, meeting_id: str, split: str) -> str | None:
         """Return the local file path for a meeting's audio.
 
-        The HuggingFace dataset caches audio locally. This method retrieves
-        the path from a sample segment.
+        Reconstructs the full meeting audio from pre-segmented utterances if
+        a cached WAV does not already exist.
 
         Args:
             meeting_id: AMI meeting identifier.
@@ -130,10 +130,12 @@ class AMILoader:
         Returns:
             Local file path to the audio file, or None if not found.
         """
-        segments = self.get_meeting_segments(meeting_id, split)
-        if not segments:
+        from src.data.meeting_audio import get_meeting_audio_path
+
+        try:
+            return get_meeting_audio_path(self, meeting_id, split)
+        except FileNotFoundError:
             return None
-        return segments[0]["audio"]["path"]
 
     def save_metadata(self, output_dir: str = "data/processed") -> dict[str, Any]:
         """Save dataset metadata to JSON files.
