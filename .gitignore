@@ -13,6 +13,7 @@ build/
 data/raw/
 data/processed/
 models/
+pretrained_models/
 *.pt
 *.pth
 *.bin
