@@ -27,7 +27,8 @@ class PyannoteVADConfig:
     """Configuration for the shared pyannote VAD pipeline."""
 
     model_id: str = "pyannote/voice-activity-detection"
-    auth_token: str | None = None
+    enabled: bool = True
+    auth_token: str | bool | None = None
     min_duration_on: float | None = None
     min_duration_off: float | None = 0.3
 
@@ -39,18 +40,38 @@ class PyannoteVAD:
         self.config = config or PyannoteVADConfig()
         self.device = get_device()
         self._pipeline = None
+        self._pipeline_unavailable = False
 
     @property
     def pipeline(self):
         """Create the pyannote VAD pipeline on first use."""
-        if self._pipeline is None:
+        if not self.config.enabled:
+            self._pipeline_unavailable = True
+            return None
+
+        if self._pipeline is None and not self._pipeline_unavailable:
             from pyannote.audio import Pipeline
 
             logger.info("Loading pyannote VAD model: %s", self.config.model_id)
-            self._pipeline = Pipeline.from_pretrained(
-                self.config.model_id,
-                use_auth_token=self._auth_token,
-            )
+            try:
+                self._pipeline = Pipeline.from_pretrained(
+                    self.config.model_id,
+                    use_auth_token=self._auth_token,
+                )
+                if self._pipeline is None:
+                    raise RuntimeError(
+                        "Pipeline.from_pretrained returned None. The model is likely gated "
+                        "or no HuggingFace token is available."
+                    )
+            except Exception as exc:
+                self._pipeline_unavailable = True
+                logger.warning(
+                    "Could not load pyannote VAD model (%s): %s. "
+                    "Falling back to full-audio speech regions.",
+                    self.config.model_id,
+                    exc,
+                )
+                return None
             if self.device.type == "cuda":
                 self._pipeline.to(torch.device("cuda"))
 
@@ -68,23 +89,53 @@ class PyannoteVAD:
         return self._pipeline
 
     @property
-    def _auth_token(self) -> str | None:
+    def _auth_token(self) -> str | bool | None:
+        """Return explicit token, env token, or True to use cached HF login."""
         return (
             self.config.auth_token
             or os.getenv("PYANNOTE_AUTH_TOKEN")
             or os.getenv("HUGGINGFACE_TOKEN")
             or os.getenv("HF_TOKEN")
+            or True
         )
 
     def detect_speech(self, audio_path: str | Path) -> list[SpeechRegion]:
         """Return speech regions as start/end dictionaries in seconds."""
-        speech = self.pipeline(str(audio_path))
-        timeline = speech.get_timeline().support()
-        regions = [
-            {"start": float(segment.start), "end": float(segment.end), "score": None}
-            for segment in timeline
-        ]
-        return normalize_speech_regions(regions)
+        pipeline = self.pipeline
+        if pipeline is None:
+            return _full_audio_region(audio_path)
+
+        try:
+            speech = pipeline(str(audio_path))
+            timeline = speech.get_timeline().support()
+            regions = [
+                {"start": float(segment.start), "end": float(segment.end), "score": None}
+                for segment in timeline
+            ]
+            return normalize_speech_regions(regions)
+        except Exception as exc:
+            logger.warning(
+                "pyannote VAD failed for %s: %s. Falling back to full-audio speech region.",
+                audio_path,
+                exc,
+            )
+            return _full_audio_region(audio_path)
+
+
+def _full_audio_region(audio_path: str | Path) -> list[SpeechRegion]:
+    """Return one region spanning the whole audio file.
+
+    This is a safety fallback for dependency/auth failures in pyannote VAD. It
+    keeps the experiment pipeline running, trading VAD filtering quality for a
+    deterministic non-crashing segmentation source.
+    """
+    import torchaudio
+
+    info = torchaudio.info(str(audio_path))
+    duration = info.num_frames / info.sample_rate
+    if duration <= 0:
+        return []
+    return [{"start": 0.0, "end": float(duration), "score": None}]
 
 
 def normalize_speech_regions(regions: list[dict[str, Any]]) -> list[SpeechRegion]:
