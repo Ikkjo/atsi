@@ -50,24 +50,44 @@ class ReferenceEmbeddingExtractor:
         self._vad_cache: dict[str, list[tuple[float, float]]] = {}
 
     @property
-    def vad_model(self) -> PyannoteModel:
-        """Lazy-load the pyannote VAD model."""
+    def vad_model(self) -> PyannoteModel | None:
+        """Lazy-load the pyannote VAD model.
+
+        Returns None if the model cannot be loaded (e.g. due to a
+        ``huggingface_hub`` version mismatch with ``pyannote-audio``).
+        Callers should check for None and degrade gracefully.
+        """
         if self._vad_model is None:
             logger.info("Loading pyannote VAD model...")
-            self._vad_model = PyannoteModel.from_pretrained(
-                "pyannote/segmentation-3.0",
-                token=True,
-            )
-            self._vad_model.eval()
-            self._vad_model.to(self.device)
-            logger.info("VAD model loaded.")
+            try:
+                self._vad_model = PyannoteModel.from_pretrained(
+                    "pyannote/segmentation-3.0",
+                    token=True,
+                )
+                self._vad_model.eval()
+                self._vad_model.to(self.device)
+                logger.info("VAD model loaded.")
+            except Exception as e:
+                logger.warning(
+                    "Failed to load pyannote VAD model: %s. "
+                    "VAD will be skipped; annotation-only intervals will be used.",
+                    e,
+                )
+                self._vad_model = None
         return self._vad_model
 
     @property
-    def vad_inference(self) -> Inference:
-        """Lazy-load pyannote inference wrapper for the segmentation model."""
+    def vad_inference(self) -> Inference | None:
+        """Lazy-load pyannote inference wrapper for the segmentation model.
+
+        Returns None if the VAD model could not be loaded.
+        """
         if self._vad_inference is None:
-            self._vad_inference = Inference(self.vad_model, device=self.device)
+            model = self.vad_model
+            if model is None:
+                logger.warning("VAD model not available; inference disabled.")
+                return None
+            self._vad_inference = Inference(model, device=self.device)
         return self._vad_inference
 
     @property
@@ -98,20 +118,22 @@ class ReferenceEmbeddingExtractor:
 
         segments: list[tuple[float, float]] = []
 
-        try:
-            binarize = Binarize(
-                onset=0.5,
-                offset=0.5,
-                min_duration_on=0.1,
-                min_duration_off=0.1,
-            )
+        infer = self.vad_inference
+        if infer is not None:
+            try:
+                binarize = Binarize(
+                    onset=0.5,
+                    offset=0.5,
+                    min_duration_on=0.1,
+                    min_duration_off=0.1,
+                )
 
-            prediction = self.vad_inference(audio_path)
-            speech_annotation = binarize(prediction)
-            for region in speech_annotation.get_timeline().support():
-                segments.append((region.start, region.end))
-        except Exception as e:
-            logger.warning("VAD failed for %s: %s", audio_path, e)
+                prediction = infer(audio_path)
+                speech_annotation = binarize(prediction)
+                for region in speech_annotation.get_timeline().support():
+                    segments.append((region.start, region.end))
+            except Exception as e:
+                logger.warning("VAD failed for %s: %s", audio_path, e)
 
         self._vad_cache[audio_path] = segments
         return segments
@@ -139,6 +161,8 @@ class ReferenceEmbeddingExtractor:
         Returns:
             List of waveform tensors (1, samples) at 16kHz.
         """
+        from src.data.meeting_audio import get_meeting_audio_path
+
         segments = self.loader.get_meeting_segments(meeting_id, split)
         speaker_segments = [s for s in segments if s["speaker_id"] == speaker_id]
         speaker_segments.sort(key=lambda s: s["begin_time"])
@@ -148,6 +172,11 @@ class ReferenceEmbeddingExtractor:
             if s["speaker_id"] != speaker_id
         ]
 
+        # Get the full meeting audio path (reconstructed if needed)
+        audio_path = get_meeting_audio_path(self.loader, meeting_id, split)
+        # Run VAD once on the full meeting audio
+        speech_segments = self.get_speech_segments(audio_path)
+
         audio_clips: list[torch.Tensor] = []
         total_duration = 0.0
 
@@ -155,11 +184,9 @@ class ReferenceEmbeddingExtractor:
             if total_duration >= max_duration:
                 break
 
-            audio_path = seg["audio"]["path"]
             start = seg["begin_time"]
             end = seg["end_time"]
 
-            speech_segments = self.get_speech_segments(audio_path)
             candidate_intervals = self._intersect_intervals(
                 [(start, end)],
                 speech_segments,

@@ -105,8 +105,11 @@ class AnnotationParser:
             else:
                 speaker_segments.append({
                     "speaker": current_speaker,
+                    "speaker_id": current_speaker,
                     "start": round(current_start, 3),
                     "end": round(current_end, 3),
+                    "begin_time": round(current_start, 3),
+                    "end_time": round(current_end, 3),
                 })
                 current_speaker = speaker
                 current_start = start
@@ -115,8 +118,11 @@ class AnnotationParser:
         if current_speaker is not None:
             speaker_segments.append({
                 "speaker": current_speaker,
+                "speaker_id": current_speaker,
                 "start": round(current_start, 3),
                 "end": round(current_end, 3),
+                "begin_time": round(current_start, 3),
+                "end_time": round(current_end, 3),
             })
 
         return speaker_segments
@@ -150,6 +156,7 @@ class AnnotationParser:
                 words.append({
                     "word": word,
                     "speaker": seg["speaker_id"],
+                    "speaker_id": seg["speaker_id"],
                     "start": round(word_start, 3),
                     "end": round(word_end, 3),
                     "timestamp_source": "estimated_from_segment_boundaries",
