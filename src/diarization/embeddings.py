@@ -53,10 +53,11 @@ class ECAPAEmbeddingExtractor:
             from speechbrain.inference.classifiers import EncoderClassifier
 
             logger.info("Loading ECAPA-TDNN speaker embedding model: %s", self.config.model_id)
+            device = "cuda:0" if self.device.type == "cuda" else str(self.device)
             self._model = EncoderClassifier.from_hparams(
                 source=self.config.model_id,
                 savedir=self.config.savedir,
-                run_opts={"device": str(self.device)},
+                run_opts={"device": device},
             )
         return self._model
 
