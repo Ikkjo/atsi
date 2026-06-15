@@ -378,7 +378,7 @@ class WhisperASR:
             end_time=end_time,
         )
         return {
-            "array": waveform.squeeze(0).cpu().numpy(),
+            "raw": waveform.squeeze(0).cpu().numpy(),
             "sampling_rate": sample_rate,
         }
 
