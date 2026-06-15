@@ -35,13 +35,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.diarization.embeddings import ECAPAEmbeddingExtractor
+from src.diarization.segmentation import DiarizationSegmenter
+from src.diarization.vad import PyannoteVAD, PyannoteVADConfig
 from src.diarization.rttm import write_rttm
 from src.diarization.scenarios import (
     run_scenario1_unknown_speakers,
     run_scenario2_oracle_speakers,
     run_scenario3_reference_identification,
 )
-from src.diarization.segmentation import DiarizationSegmenter
 from src.integration.transcript import (
     build_integrated_transcript,
     save_json_transcript,
@@ -53,6 +54,7 @@ from src.evaluation.speaker_identification import evaluate_speaker_identificatio
 from src.asr.whisper import WhisperASR
 from src.data.annotation_parser import AnnotationParser
 from src.data.ami_loader import AMILoader
+from src.data.meeting_audio import get_meeting_audio_path
 from src.data.preprocessing import load_audio
 from src.data.reference_embeddings import ReferenceEmbeddingExtractor
 from src.utils.hardware import get_device
@@ -77,7 +79,7 @@ REQUIRED_FIELDS = {
 }
 
 # Optional fields that are recognised but not required
-OPTIONAL_FIELDS = {"seed", "meeting_ids", "hf_cache_dir", "split"}
+OPTIONAL_FIELDS = {"seed", "meeting_ids", "hf_cache_dir", "split", "vad"}
 
 VALID_SCENARIOS = {"scenario1", "scenario2", "scenario3"}
 VALID_MICS = {"ihm", "sdm"}
@@ -154,6 +156,27 @@ def discover_meetings(config: dict[str, Any]) -> list[str]:
     if not meetings:
         raise ValueError(f"No *_annotations.json files found in {annotations_dir}")
 
+    mic = config.get("microphone_configuration")
+    split = config.get("split", "test")
+    if mic:
+        cache_dir = config.get("hf_cache_dir")
+        loader = AMILoader(config=mic, cache_dir=cache_dir)
+        hf_meetings = set(loader.get_meeting_ids(split))
+        skipped = [meeting for meeting in meetings if meeting not in hf_meetings]
+        if skipped:
+            logging.getLogger(__name__).warning(
+                "Skipping %d annotation meeting(s) absent from AMI %s/%s: %s",
+                len(skipped),
+                mic,
+                split,
+                skipped[:10],
+            )
+        meetings = [meeting for meeting in meetings if meeting in hf_meetings]
+        if not meetings:
+            raise ValueError(
+                f"No annotation meetings overlap with AMI {mic}/{split} in {annotations_dir}"
+            )
+
     return meetings
 
 
@@ -168,90 +191,50 @@ def _load_annotations(config: dict[str, Any], meeting_id: str) -> dict[str, Any]
     if not path.exists():
         raise FileNotFoundError(f"Annotations not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return _normalize_annotations(json.load(f))
+
+
+def _normalize_annotations(annotation: dict[str, Any]) -> dict[str, Any]:
+    """Normalize older generated annotation schemas to the runner contract."""
+    normalized = dict(annotation)
+    segments = []
+    for segment in annotation.get("segments", []):
+        speaker_id = segment.get("speaker_id", segment.get("speaker", "unknown"))
+        start = segment.get("begin_time", segment.get("start"))
+        end = segment.get("end_time", segment.get("end"))
+        if start is None or end is None:
+            continue
+        segments.append(
+            {
+                **segment,
+                "speaker_id": str(speaker_id),
+                "speaker": str(segment.get("speaker", speaker_id)),
+                "begin_time": float(start),
+                "end_time": float(end),
+                "start": float(segment.get("start", start)),
+                "end": float(segment.get("end", end)),
+            }
+        )
+
+    words = []
+    for word in annotation.get("words", []):
+        speaker_id = word.get("speaker_id", word.get("speaker", "unknown"))
+        words.append({**word, "speaker_id": str(speaker_id), "speaker": str(word.get("speaker", speaker_id))})
+
+    normalized["segments"] = segments
+    normalized["words"] = words
+    if not normalized.get("speakers"):
+        normalized["speakers"] = sorted({segment["speaker_id"] for segment in segments})
+    return normalized
 
 
 def _get_meeting_audio_path(config: dict[str, Any], meeting_id: str) -> str:
-    """Resolve audio path, materialising full meeting audio from HuggingFace dataset segments.
-
-    The AMI dataset is loaded through HuggingFace ``datasets``.  Recent
-    versions (4.8+) use ``torchcodec`` and store audio as pre-segmented
-    utterances (one audio clip per row).  This helper reconstructs the
-    full meeting audio by grouping segments by microphone channel, sorting
-    by time, and placing each clip at its correct offset in a single WAV.
-    """
-    import torchaudio
-    import torch
-    from collections import defaultdict
-
+    """Thin wrapper that creates a loader and delegates to the shared helper."""
     mic = config["microphone_configuration"]
     split = config.get("split", "test")
     cache_dir = config.get("hf_cache_dir")
-
-    # 1. Re-use an already-materialised WAV file
-    raw_dir = PROJECT_ROOT / "data" / "raw" / mic
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    wav_path = raw_dir / f"{meeting_id}.wav"
-    if wav_path.exists():
-        return str(wav_path)
-
-    # 2. Load from HuggingFace dataset
     loader = AMILoader(config=mic, cache_dir=cache_dir)
-    segments = loader.get_meeting_segments(meeting_id, split)
-    if not segments:
-        raise FileNotFoundError(
-            f"No segments found for {meeting_id} in AMI {mic}/{split}. "
-            f"Ensure the HuggingFace dataset is downloaded (cache_dir={cache_dir})."
-        )
-
-    # 3. Group segments by microphone channel and sort by time
-    channels: dict[str, list[dict]] = defaultdict(list)
-    for seg in segments:
-        channels[seg["microphone_id"]].append(seg)
-    for ch in channels:
-        channels[ch].sort(key=lambda s: s["begin_time"])
-
-    # 4. Determine full meeting duration
-    max_end = max(seg["end_time"] for seg in segments)
-    sample_rate = 16000
-    total_samples = int(max_end * sample_rate) + 1
-
-    # 5. Build multi-channel audio (one channel per microphone)
-    # For IHM: typically 4 channels (H00, H01, H02, H03)
-    # For SDM: typically 1 channel
-    channel_ids = sorted(channels.keys())
-    num_channels = len(channel_ids)
-    full_audio = torch.zeros(num_channels, total_samples, dtype=torch.float32)
-
-    for ch_idx, ch_id in enumerate(channel_ids):
-        for seg in channels[ch_id]:
-            # Decode audio clip
-            audio_decoder = seg["audio"]
-            samples = audio_decoder.get_all_samples()
-            clip = samples.data  # shape (1, clip_samples)
-            clip_sr = getattr(samples, "sample_rate", 16000)
-
-            # Resample if needed (should be 16kHz already)
-            if clip_sr != sample_rate:
-                clip = torchaudio.functional.resample(clip, clip_sr, sample_rate)
-
-            # Place at correct offset
-            start_sample = int(seg["begin_time"] * sample_rate)
-            clip_len = clip.shape[1]
-            end_sample = min(start_sample + clip_len, total_samples)
-            actual_len = end_sample - start_sample
-            if actual_len > 0:
-                full_audio[ch_idx, start_sample:end_sample] = clip[0, :actual_len]
-
-    # 6. Convert to mono for downstream compatibility (Whisper/ECAPA expect mono)
-    # For IHM, we could keep multi-channel, but mono is safer for compatibility
-    if num_channels > 1:
-        mono_audio = full_audio.mean(dim=0, keepdim=True)
-    else:
-        mono_audio = full_audio
-
-    torchaudio.save(str(wav_path), mono_audio, sample_rate)
-    return str(wav_path)
+    return get_meeting_audio_path(loader, meeting_id, split)
 
 
 def _load_or_generate_asr(
@@ -300,7 +283,12 @@ def _load_or_generate_embeddings(
         audio_path = _get_meeting_audio_path(config, meeting_id)
         logger.info("Audio path resolved: %s", audio_path)
 
-        extractor = ECAPAEmbeddingExtractor()
+        vad_config = config.get("vad", {})
+        vad_enabled = bool(vad_config.get("enabled", True))
+        segmenter = DiarizationSegmenter(
+            vad=PyannoteVAD(PyannoteVADConfig(enabled=vad_enabled))
+        )
+        extractor = ECAPAEmbeddingExtractor(segmenter=segmenter)
         result = extractor.extract_embeddings(
             audio_path, meeting_id=meeting_id, output_dir=embeddings_dir, use_cache=False
         )
@@ -403,6 +391,13 @@ def run_one_meeting(
     emb_result = _load_or_generate_embeddings(config, meeting_id, logger)
     segments = emb_result["segments"]
     embeddings = emb_result["embeddings"]
+    if len(segments) == 0 or len(embeddings) == 0:
+        raise ValueError(f"No embedding segments found for {meeting_id}")
+    if len(segments) != len(embeddings):
+        raise ValueError(
+            f"Embedding segment count mismatch for {meeting_id}: "
+            f"segments={len(segments)} embeddings={len(embeddings)}"
+        )
     logger.info(
         "Loaded embeddings for %s (segments: %d, dim: %s)",
         meeting_id, len(segments), embeddings.shape[1] if embeddings.ndim == 2 else 0
