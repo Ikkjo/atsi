@@ -16,9 +16,8 @@
   "diarization": {
     "linkage_method": "average",
     "metric": "cosine",
-    "distance_threshold": 0.35,
-    "reference_threshold": null,
-    "note": "PLACEHOLDER threshold - run validation sweep to determine optimal value"
+    "distance_threshold": 0.8,
+    "reference_threshold": null
   },
   "vad": {
     "enabled": true
