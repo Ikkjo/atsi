@@ -60,10 +60,22 @@ class ReferenceEmbeddingExtractor:
         if self._vad_model is None:
             logger.info("Loading pyannote VAD model...")
             try:
-                self._vad_model = PyannoteModel.from_pretrained(
-                    "pyannote/segmentation-3.0",
-                    token=True,
-                )
+                # PyTorch 2.6+ changed torch.load default to weights_only=True,
+                # which breaks pyannote models. Force it off for trusted models.
+                import os
+                env_key = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
+                old_env = os.environ.get(env_key)
+                os.environ[env_key] = "1"
+                try:
+                    self._vad_model = PyannoteModel.from_pretrained(
+                        "pyannote/segmentation-3.0",
+                        token=True,
+                    )
+                finally:
+                    if old_env is None:
+                        os.environ.pop(env_key, None)
+                    else:
+                        os.environ[env_key] = old_env
                 self._vad_model.eval()
                 self._vad_model.to(self.device)
                 logger.info("VAD model loaded.")

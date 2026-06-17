@@ -44,7 +44,14 @@ class PyannoteVAD:
 
     @property
     def pipeline(self):
-        """Create the pyannote VAD pipeline on first use."""
+        """Create the pyannote VAD pipeline on first use.
+
+        PyTorch 2.6+ defaults to ``weights_only=True`` in ``torch.load``,
+        which breaks older pyannote checkpoints that contain
+        ``pytorch_lightning`` callbacks. We temporarily set the environment
+        variable to force ``weights_only=False`` for pyannote models only
+        (they are from a trusted source – HuggingFace).
+        """
         if not self.config.enabled:
             self._pipeline_unavailable = True
             return None
@@ -54,10 +61,22 @@ class PyannoteVAD:
 
             logger.info("Loading pyannote VAD model: %s", self.config.model_id)
             try:
-                self._pipeline = Pipeline.from_pretrained(
-                    self.config.model_id,
-                    use_auth_token=self._auth_token,
-                )
+                # PyTorch 2.6+ changed torch.load default to weights_only=True,
+                # which breaks pyannote models. Force it off for trusted models.
+                env_key = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
+                old_env = os.environ.get(env_key)
+                os.environ[env_key] = "1"
+                try:
+                    self._pipeline = Pipeline.from_pretrained(
+                        self.config.model_id,
+                        use_auth_token=self._auth_token,
+                    )
+                finally:
+                    if old_env is None:
+                        os.environ.pop(env_key, None)
+                    else:
+                        os.environ[env_key] = old_env
+
                 if self._pipeline is None:
                     raise RuntimeError(
                         "Pipeline.from_pretrained returned None. The model is likely gated "
