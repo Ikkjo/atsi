@@ -12,6 +12,7 @@ build/
 # Data and models (large files)
 data/raw/
 data/processed/
+data/validation/
 models/
 pretrained_models/
 *.pt
@@ -21,12 +22,12 @@ pretrained_models/
 
 # Results (generated)
 results/
+results_BACKUP_*/
 logs/
 report_materials/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
 
 # IDE
 .vscode/
