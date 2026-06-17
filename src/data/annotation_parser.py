@@ -130,6 +130,11 @@ class AnnotationParser:
     def _extract_word_annotations(self, segments: list[dict]) -> list[dict]:
         """Extract word-level transcriptions with timestamps.
 
+        Words are sorted by their actual start timestamps to ensure the
+        reference text is in chronological order. This is critical for
+        WER evaluation because overlapping speaker segments in the AMI
+        dataset would otherwise produce a jumbled word sequence.
+
         Args:
             segments: List of dataset segment dicts.
 
@@ -162,6 +167,10 @@ class AnnotationParser:
                     "timestamp_source": "estimated_from_segment_boundaries",
                 })
 
+        # Sort by actual word timestamp to ensure chronological order
+        # (overlapping segments from different speakers can produce
+        #  out-of-order words when appended segment-by-segment)
+        words.sort(key=lambda w: (w["start"], w["end"]))
         return words
 
     def save_meeting_annotations(
