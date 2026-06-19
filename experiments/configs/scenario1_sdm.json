@@ -16,7 +16,7 @@
   "diarization": {
     "linkage_method": "average",
     "metric": "cosine",
-    "distance_threshold": 0.85,
+    "distance_threshold": 0.8,
     "reference_threshold": null
   },
   "vad": {
